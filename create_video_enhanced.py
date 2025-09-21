@@ -15,6 +15,10 @@ import os
 import requests
 from datetime import datetime
 import re
+import random
+from stock_footage_manager import StockFootageManager
+from voice_enhancer import generate_voice_with_subtitles_enhanced
+from video_effects_manager import VideoEffectsManager
 
 class EnhancedVideoCreator:
     def __init__(self):
@@ -26,9 +30,9 @@ class EnhancedVideoCreator:
         }
         self.fps = 30
         
-        # Indian English voices
+        # More modern voices
         self.voices = {
-            'female': 'en-IN-NeerjaNeural',
+            'female': 'en-US-AriaNeural',  # More modern than Indian accent
             'male': 'en-IN-PrabhatNeural'
         }
         
@@ -59,19 +63,19 @@ class EnhancedVideoCreator:
         audio_clip = AudioFileClip(voice_file)
         duration = audio_clip.duration
         
-        # Simple word timing (enhance with actual speech recognition later)
+        # Make subtitles appear word by word, not all at once
         subtitles = []
-        words_per_second = len(words) / duration
+        words_per_second = 2.5  # Faster pace for modern videos
         current_time = 0
-        
-        for i, word in enumerate(words):
+
+        for word in words:
             word_duration = 1 / words_per_second
             subtitles.append({
                 'text': word,
                 'start': current_time,
                 'end': current_time + word_duration
             })
-            current_time += word_duration
+            current_time += word_duration * 0.8  # Slight overlap for smooth flow
             
         return voice_file, subtitles
     
@@ -131,47 +135,60 @@ class EnhancedVideoCreator:
         
         # Add animation based on style
         if style == 'slide':
-            text_clip = text_clip.set_position(lambda t: ('center', 50 + t * 20))
+            text_clip = text_clip.set_position(('center', 60))  # Fixed position
         elif style == 'fade':
             text_clip = text_clip.fadein(0.5).fadeout(0.5)
         elif style == 'zoom':
-            text_clip = text_clip.resize(lambda t: 1 + 0.1 * t)
+            try:
+                text_clip = text_clip.resize(lambda t: min(1.3, 1 + 0.1 * (t / duration)))
+            except:
+                pass  # Skip if it fails
             
         return text_clip
     
     def create_subtitle_clips(self, subtitles, width, height):
-        """Create subtitle clips from timing data"""
+        """Create modern animated subtitles"""
         subtitle_clips = []
-        
-        for sub in subtitles:
-            # Create text image for subtitle
-            img = Image.new('RGBA', (width, 200), (0, 0, 0, 0))
+
+        for i, sub in enumerate(subtitles):
+            # Bigger, bolder text
+            img = Image.new('RGBA', (width, 250), (0, 0, 0, 0))
             draw = ImageDraw.Draw(img)
-            
+
             try:
-                font = ImageFont.truetype("arial.ttf", 40)
+                font = ImageFont.truetype("arial.ttf", 80)  # Bigger font
             except:
                 font = ImageFont.load_default()
-            
-            # Center text
-            text_bbox = draw.textbbox((0, 0), sub['text'], font=font)
-            text_width = text_bbox[2] - text_bbox[0]
+
+            text = sub['text'].upper()  # Always uppercase
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
             x = (width - text_width) // 2
-            
-            # Draw with background
-            padding = 10
-            draw.rectangle([x - padding, 10, x + text_width + padding, 60], 
-                          fill=(0, 0, 0, 180))
-            draw.text((x, 20), sub['text'], font=font, fill=(255, 255, 255, 255))
-            
-            # Create clip
+
+            # No background box - just thick outline
+            for offset in range(5):  # Thick black outline
+                for angle in range(0, 360, 30):
+                    dx = offset * np.cos(np.radians(angle))
+                    dy = offset * np.sin(np.radians(angle))
+                    draw.text((x + dx, 100 + dy), text, font=font, fill=(0, 0, 0, 255))
+
+            # Bright white or yellow text
+            color = (255, 255, 0) if i % 2 == 0 else (255, 255, 255)
+            draw.text((x, 100), text, font=font, fill=(*color, 255))
+
+            # Create clip with pop animation
             img_array = np.array(img)
             subtitle_clip = (ImageClip(img_array, duration=sub['end'] - sub['start'])
                            .set_start(sub['start'])
-                           .set_position(('center', height - 250)))
-            
+                           .set_position(('center', height - 350)))
+
+            # Add scale animation
+            subtitle_clip = subtitle_clip.resize(
+                lambda t: min(1.2, 0.5 + t * 5) if t < 0.1 else 1
+            )
+
             subtitle_clips.append(subtitle_clip)
-            
+
         return subtitle_clips
     
     def add_background_music(self, video_clip, music_file=None):
@@ -243,8 +260,8 @@ class EnhancedVideoCreator:
         return min(score, 10)
     
     async def create_video(self, script_data, format_type='reels'):
-        """Main function to create enhanced video"""
-        print(f"🎬 Creating {format_type} video...")
+        """Main function to create enhanced video with stock footage"""
+        print(f"Creating {format_type} video with stock footage...")
         
         # Get format specifications
         format_spec = self.formats[format_type]
@@ -252,7 +269,7 @@ class EnhancedVideoCreator:
         height = format_spec['height']
         
         # Generate voice and subtitles
-        voice_file, subtitles = await self.generate_voice_with_subtitles(
+        voice_file, subtitles = await generate_voice_with_subtitles_enhanced(
             script_data['voiceover'],
             voice_type='female'
         )
@@ -261,83 +278,123 @@ class EnhancedVideoCreator:
         audio = AudioFileClip(voice_file)
         duration = audio.duration
         
-        # Create background (with stock footage if available)
-        background_clips = []
+        # Initialize managers
+        stock_manager = StockFootageManager(self.pexels_key)
+        effects_manager = VideoEffectsManager()
+
+        # Get stock footage for the script
+        print("Fetching stock footage...")
+        footage_dict = stock_manager.get_footage_for_script(script_data)
         
-        # Try to get stock footage
-        keywords = script_data.get('title', 'AI technology').split()[:2]
-        stock_urls = self.fetch_stock_footage(' '.join(keywords), count=2)
+        # Create video segments with stock footage
+        video_segments = []
+        current_time = 0
         
-        if stock_urls:
-            # Use stock footage
-            for url in stock_urls:
-                try:
-                    # Download and use stock video (simplified for example)
-                    # In production, download and cache these
-                    pass
-                except:
-                    pass
+        # Calculate segment durations
+        hook_duration = min(3, duration * 0.10)  # 3 seconds max, not 5
+        cta_duration = min(3, duration * 0.10)   # 3 seconds max, not 5
+        main_duration = duration - hook_duration - cta_duration
+        points_count = len(script_data['script_components']['main_points'])
+        point_duration = 1.5  # Fixed 1.5 seconds per point, not calculated
         
-        # Fallback to gradient background
-        if not background_clips:
-            background = ColorClip(
-                size=(width, height),
-                color=(20, 20, 30),
-                duration=duration
+        # 1. HOOK SEGMENT (0-5 seconds) - Using VideoEffectsManager
+        footage_clips = []
+        # Collect footage clips for hook sequence
+        if footage_dict['hook']:
+            footage_clips.extend(footage_dict['hook'])
+        if footage_dict['background']:
+            footage_clips.extend(footage_dict['background'])
+
+        if len(footage_clips) >= 3:
+            # Use first 3 clips for hook sequence
+            hook_segment = effects_manager.create_hook_sequence(
+                footage_clips[:3],
+                script_data['script_components']['hook'],
+                hook_duration
             )
-            background_clips = [background]
-        
-        # Create main composition
-        clips = background_clips.copy()
-        
-        # Add title
-        title_clip = self.create_animated_text(
-            script_data['video_details']['title'],
-            duration,
-            width, height,
-            style='fade'
-        ).set_position(('center', 100))
-        clips.append(title_clip)
-        
-        # Add hook (first 5 seconds)
-        hook_clip = self.create_animated_text(
-            script_data['script_components']['hook'],
-            min(5, duration),
-            width, height,
-            style='zoom'
-        ).set_start(0)
-        clips.append(hook_clip)
-        
-        # Add main points
-        points = script_data['script_components']['main_points']
-        point_duration = (duration - 10) / len(points)
-        
-        for i, point in enumerate(points):
-            start_time = 5 + (i * point_duration)
-            point_clip = self.create_animated_text(
-                point,
-                point_duration,
+        elif footage_dict['hook']:
+            # Fallback to single footage segment
+            hook_segment = self.create_footage_segment(
+                footage_dict['hook'][0],
+                hook_duration,
                 width, height,
-                style='slide'
-            ).set_start(start_time)
-            clips.append(point_clip)
+                text_overlay=script_data['script_components']['hook'],
+                style='dramatic'
+            )
+        else:
+            # Fallback to gradient if no footage
+            hook_segment = self.create_text_on_gradient(
+                script_data['script_components']['hook'],
+                hook_duration, width, height
+            )
+        video_segments.append(hook_segment)
+        current_time += hook_duration
         
-        # Add CTA (last 5 seconds)
-        cta_clip = self.create_animated_text(
-            script_data['script_components']['cta'],
-            5,
-            width, height,
-            style='fade'
-        ).set_start(duration - 5).set_position(('center', height - 300))
-        clips.append(cta_clip)
+        # 2. MAIN POINTS SEGMENTS
+        main_points = script_data['script_components']['main_points']
+        for i, point in enumerate(main_points):
+            # Use stock footage if available
+            if i < len(footage_dict['main_points']) and footage_dict['main_points'][i]:
+                point_clip = self.create_footage_segment(
+                    footage_dict['main_points'][i],
+                    point_duration,
+                    width, height,
+                    text_overlay=point,
+                    style='informative'
+                )
+            else:
+                # Use background footage or gradient
+                if footage_dict['background']:
+                    bg_video = random.choice(footage_dict['background'])
+                    point_clip = self.create_footage_segment(
+                        bg_video,
+                        point_duration,
+                        width, height,
+                        text_overlay=point,
+                        style='informative'
+                    )
+                else:
+                    point_clip = self.create_text_on_gradient(
+                        point, point_duration, width, height
+                    )
+            
+            video_segments.append(point_clip)
+            current_time += point_duration
         
-        # Add subtitles
-        subtitle_clips = self.create_subtitle_clips(subtitles, width, height)
-        clips.extend(subtitle_clips)
+        # 3. CTA SEGMENT (last 5 seconds)
+        if footage_dict['cta']:
+            cta_clip = self.create_footage_segment(
+                footage_dict['cta'][0],
+                cta_duration,
+                width, height,
+                text_overlay=script_data['script_components']['cta'],
+                style='action'
+            )
+        else:
+            cta_clip = self.create_text_on_gradient(
+                script_data['script_components']['cta'],
+                cta_duration, width, height
+            )
+        video_segments.append(cta_clip)
         
-        # Combine all clips
-        final_video = CompositeVideoClip(clips)
+        # Concatenate all segments with transitions
+        print("Combining video segments with transitions...")
+        final_video = self.concatenate_with_transitions(video_segments)
+        
+        # Add audio
         final_video = final_video.set_audio(audio)
+        
+        # Add TikTok-style animated captions
+        print("Adding TikTok-style animated captions...")
+        caption_clips = effects_manager.create_animated_captions(
+            script_data['voiceover'],
+            duration,
+            style='bold'
+        )
+
+        # Combine video with captions
+        clips_with_captions = [final_video] + caption_clips
+        final_video = CompositeVideoClip(clips_with_captions)
         
         # Add background music
         music_file = os.path.join(self.music_dir, "background_music_1.mp3")
@@ -352,14 +409,15 @@ class EnhancedVideoCreator:
         )
         
         # Export video
-        print(f"📹 Rendering {format_type} video...")
+        print(f"Rendering {format_type} video...")
         final_video.write_videofile(
             output_path,
             fps=self.fps,
             codec='libx264',
             audio_codec='aac',
             preset='medium',
-            threads=4
+            threads=4,
+            logger=None  # Suppress verbose output
         )
         
         # Cleanup
@@ -367,40 +425,275 @@ class EnhancedVideoCreator:
         
         # Generate quality report
         report = self.create_quality_report(output_path, script_data)
-        print(f"✅ Video saved to: {output_path}")
-        print(f"📊 Quality score: {report['predicted_score']}/10")
+        print(f"Video saved to: {output_path}")
+        print(f"Quality score: {report['predicted_score']}/10")
         
         # Generate thumbnail
         self.generate_thumbnail(final_video, output_path.replace('.mp4', '_thumb.jpg'))
         
         return output_path, report
+
+    def create_footage_segment(self, video_path, duration, width, height, text_overlay=None, style='normal'):
+        """Create a video segment from stock footage with effects"""
+        try:
+            # CHANGE: Make clips shorter
+            duration = min(duration, 2.0)  # Max 2 seconds per clip instead of 5+
+
+            # Load stock video
+            clip = VideoFileClip(video_path)
+            
+            # Loop if too short
+            if clip.duration < duration:
+                clip = clip.loop(duration=duration)
+            else:
+                # Select interesting part (avoid beginning/end)
+                start = min(2, clip.duration * 0.1)  # Start 10% in or 2 seconds
+                clip = clip.subclip(start, start + duration)
+            
+            # Resize to fit format (crop to fill)
+            clip = self.resize_and_crop(clip, width, height)
+            
+            # Apply style effects
+            if style == 'dramatic':
+                # Add zoom effect for hook with lambda function
+                try:
+                    clip = clip.resize(lambda t: min(1.3, 1 + 0.1 * (t / duration)))
+                except:
+                    pass  # Skip zoom if it fails
+                # Add vignette
+                clip = self.add_vignette(clip, width, height)
+            elif style == 'informative':
+                # Ken Burns effect
+                clip = self.apply_ken_burns(clip, duration)
+            elif style == 'action':
+                # Speed ramp for CTA (simplified)
+                try:
+                    speed_factor = 1.2  # Fixed speed instead of time-based
+                    clip = clip.speedx(speed_factor)
+                except:
+                    pass  # Skip speed change if it fails
+            
+            # Add color grading
+            clip = self.apply_color_grading(clip, style)
+            
+            # Add text overlay if provided
+            if text_overlay:
+                text_clip = self.create_animated_text(
+                    text_overlay, duration, width, height, style
+                )
+                clip = CompositeVideoClip([clip, text_clip])
+            
+            return clip
+            
+        except Exception as e:
+            print(f"Error processing footage: {e}")
+            # Fallback to gradient
+            return self.create_text_on_gradient(text_overlay or "", duration, width, height)
+
+    def resize_and_crop(self, clip, target_width, target_height):
+        """Resize and crop video to target dimensions"""
+        # Get clip dimensions safely
+        clip_width = clip.w if hasattr(clip, 'w') else clip.size[0]
+        clip_height = clip.h if hasattr(clip, 'h') else clip.size[1]
+
+        # Calculate aspect ratios
+        clip_ratio = clip_width / clip_height
+        target_ratio = target_width / target_height
+
+        if clip_ratio > target_ratio:
+            # Video is wider - fit height, crop width
+            new_height = target_height
+            new_width = int(target_height * clip_ratio)
+            clip = clip.resize(height=new_height)
+            # Center crop
+            x_center = clip.w / 2 if hasattr(clip, 'w') else clip.size[0] / 2
+            clip = clip.crop(x1=x_center - target_width/2, x2=x_center + target_width/2)
+        else:
+            # Video is taller - fit width, crop height
+            new_width = target_width
+            new_height = int(target_width / clip_ratio)
+            clip = clip.resize(width=new_width)
+            # Center crop
+            y_center = clip.h / 2 if hasattr(clip, 'h') else clip.size[1] / 2
+            clip = clip.crop(y1=y_center - target_height/2, y2=y_center + target_height/2)
+
+        return clip
+
+    def apply_ken_burns(self, clip, duration):
+        """Apply Ken Burns effect (pan and zoom)"""
+        # Random zoom direction
+        zoom_in = random.choice([True, False])
+        
+        if zoom_in:
+            # Start wide, zoom in with lambda
+            try:
+                clip = clip.resize(lambda t: min(1.3, 1 + 0.1 * (t / duration)))
+            except:
+                pass  # Skip if it fails
+        else:
+            # Start close, zoom out with lambda
+            try:
+                clip = clip.resize(lambda t: max(0.8, 1.3 - 0.1 * (t / duration)))
+            except:
+                pass  # Skip if it fails
+        
+        return clip
+
+    def add_vignette(self, clip, width, height):
+        """Add vignette effect"""
+        from PIL import Image, ImageDraw
+        import numpy as np
+        
+        # Create vignette mask
+        vignette = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(vignette)
+        
+        # Draw radial gradient
+        for i in range(min(width, height) // 2):
+            alpha = int(255 * (i / (min(width, height) / 2)) ** 2)
+            draw.ellipse(
+                [i, i, width - i, height - i],
+                fill=(0, 0, 0, alpha)
+            )
+        
+        vignette_clip = ImageClip(np.array(vignette), duration=clip.duration)
+        
+        return CompositeVideoClip([clip, vignette_clip])
+
+    def apply_color_grading(self, clip, style):
+        """Apply color grading based on style"""
+        if style == 'dramatic':
+            # Increase contrast, slight blue tint
+            clip = clip.fx(vfx.colorx, 1.2)  # Increase contrast
+        elif style == 'informative':
+            # Bright and clear
+            clip = clip.fx(vfx.gamma_corr, 1.1)  # Slightly brighter
+        elif style == 'action':
+            # High contrast, saturated
+            clip = clip.fx(vfx.colorx, 1.3)
+        
+        return clip
+
+    def concatenate_with_transitions(self, clips, transition_duration=0.5):
+        """Concatenate clips with smooth transitions"""
+        final_clips = []
+        
+        for i, clip in enumerate(clips):
+            if i > 0:
+                # Add crossfade transition
+                clip = clip.crossfadein(transition_duration)
+            if i < len(clips) - 1:
+                # Prepare for next transition
+                clip = clip.crossfadeout(transition_duration)
+            
+            final_clips.append(clip)
+        
+        # Use concatenate with padding to handle transitions
+        return concatenate_videoclips(final_clips, padding=-transition_duration, method="compose")
+
+    def create_animated_subtitles(self, subtitles, width, height):
+        """Create modern animated subtitles"""
+        subtitle_clips = []
+        
+        for i, sub in enumerate(subtitles):
+            # Create modern subtitle style
+            img = Image.new('RGBA', (width, 120), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            
+            try:
+                # Use bold font for better visibility
+                font = ImageFont.truetype("arialbd.ttf", 48)
+            except:
+                font = ImageFont.load_default()
+            
+            text = sub['text'].upper()  # Uppercase for impact
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            x = (width - text_width) // 2
+            
+            # Draw background pill
+            padding = 20
+            draw.rounded_rectangle(
+                [x - padding, 20, x + text_width + padding, 80],
+                radius=30,
+                fill=(0, 0, 0, 200)
+            )
+            
+            # Draw text with glow effect
+            for offset in range(3, 0, -1):
+                draw.text((x, 30), text, font=font, 
+                         fill=(255, 255, 0, 100 // offset))  # Yellow glow
+            draw.text((x, 30), text, font=font, fill=(255, 255, 255, 255))
+            
+            # Create clip with animation
+            subtitle_clip = (ImageClip(np.array(img), duration=sub['end'] - sub['start'])
+                            .set_start(sub['start'])
+                            .set_position(('center', height - 200)))
+            
+            # Add pop animation - simplified
+            try:
+                subtitle_clip = subtitle_clip.resize(1.05)  # Fixed small zoom
+            except:
+                pass  # Skip if it fails
+            
+            subtitle_clips.append(subtitle_clip)
+        
+        return subtitle_clips
+
+    def create_text_on_gradient(self, text, duration, width, height):
+        """Fallback: Create text on gradient background"""
+        # Use existing gradient creation
+        background = ColorClip(
+            size=(width, height),
+            color=(20, 20, 30),
+            duration=duration
+        )
+        
+        # Add gradient overlay
+        gradient = ImageClip(
+            self.create_gradient_image(width, height),
+            duration=duration
+        ).set_opacity(0.8)
+        
+        # Add text
+        text_clip = self.create_animated_text(
+            text, duration, width, height, style='fade'
+        ).set_position(('center', 'center'))
+        
+        return CompositeVideoClip([background, gradient, text_clip])
+
+    def create_gradient_image(self, width, height):
+        """Creates a gradient image."""
+        img = Image.new('RGB', (width, height))
+        draw = ImageDraw.Draw(img)
+        for i in range(height):
+            r = int(20 + 30 * i / height)
+            g = int(20 + 30 * i / height)
+            b = int(30 + 40 * i / height)
+            draw.line([(0, i), (width, i)], fill=(r, g, b))
+        return np.array(img)
+
     
     def generate_thumbnail(self, video_clip, output_path):
-        """Generate eye-catching thumbnail"""
-        # Get frame at 2 seconds (usually good action)
+        """Generate better positioned thumbnail"""
+        # Get frame at 2 seconds
         frame = video_clip.get_frame(2)
-        
-        # Convert to PIL Image
         img = Image.fromarray(frame)
-        
-        # Add overlay text or effects here if needed
-        
-        # Save thumbnail
+
+        # Don't add text on thumbnail - let the video content speak
+        # Or position text in the safe zone (center 80% of image)
+
         img.save(output_path, quality=95)
-        print(f"🖼️ Thumbnail saved: {output_path}")
+        print(f"Thumbnail saved: {output_path}")
     
     async def create_all_formats(self, script_data):
-        """Create video in all formats"""
+        """Create video in reels format only"""
         results = {}
-        
-        # Primary format - Reels/Shorts (9:16)
+
+        # Only create Reels/Shorts format (9:16)
         reels_path, reels_report = await self.create_video(script_data, 'reels')
         results['reels'] = {'path': reels_path, 'report': reels_report}
-        
-        # Square format for Instagram Feed (1:1)
-        square_path, square_report = await self.create_video(script_data, 'square')
-        results['square'] = {'path': square_path, 'report': square_report}
-        
+
         return results
 
 # Test function
@@ -412,11 +705,11 @@ async def test_enhanced_creator():
             "title": "AI Revolution in India 2025"
         },
         "script_components": {
-            "hook": "BREAKING: India's AI sector just hit ₹1 Trillion!",
+            "hook": "BREAKING: India's AI sector just hit 1 Trillion!",
             "main_points": [
                 "3 Indian startups are leading global AI innovation",
                 "Government launches AI skill program for 1 million students",
-                "Tech giants investing ₹50,000 crore in Indian AI"
+                "Tech giants investing 50,000 crore in Indian AI"
             ],
             "cta": "Follow for daily AI updates from India!"
         },
@@ -433,7 +726,7 @@ async def test_enhanced_creator():
     creator = EnhancedVideoCreator()
     results = await creator.create_all_formats(script_data)
     
-    print("\n🎉 All formats created successfully!")
+    print("\nAll formats created successfully!")
     for format_name, result in results.items():
         print(f"  {format_name}: {result['path']}")
         print(f"  Quality Score: {result['report']['predicted_score']}/10")

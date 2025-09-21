@@ -13,12 +13,16 @@ import sys
 from datetime import datetime
 import logging
 import traceback
+import threading
+import uuid
+from typing import Dict, Any
 
 # Add project to path
 sys.path.append(r"C:\New Project\viral-ai-content")
 
 # Import video creators
 from create_video_enhanced import EnhancedVideoCreator
+from documentary_style_creator import DocumentaryStyleCreator
 
 # Configure logging
 logging.basicConfig(
@@ -34,91 +38,344 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)  # Enable CORS for n8n
 
-@app.route('/create-video', methods=['POST'])
-def create_video():
-    """Main endpoint for video creation"""
+# Global job status tracker
+job_status: Dict[str, Dict[str, Any]] = {}
+
+def _create_video_async(job_id: str, script_data: dict):
+    """Background function to create video asynchronously"""
     try:
+        # Update status to processing
+        job_status[job_id].update({
+            "status": "processing",
+            "message": "Creating video...",
+            "progress": 10,
+            "updated_at": datetime.now().isoformat()
+        })
+
+        logger.info(f"[{job_id}] Starting async video creation")
+
+        # Validate required fields
+        if not validate_script_data(script_data):
+            job_status[job_id].update({
+                "status": "error",
+                "error": "Invalid script data - missing required fields",
+                "progress": 0,
+                "updated_at": datetime.now().isoformat()
+            })
+            return
+
+        # Log parsed data
+        logger.info(f"[{job_id}] Script ID: {script_data.get('id', 'unknown')}")
+        logger.info(f"[{job_id}] Title: {script_data['video_details']['title']}")
+        logger.info(f"[{job_id}] Voiceover length: {len(script_data['voiceover'])} chars")
+
+        # Update progress
+        job_status[job_id].update({
+            "message": "Initializing video creator...",
+            "progress": 20,
+            "updated_at": datetime.now().isoformat()
+        })
+
+        # Create output directory
+        output_dir = r"C:\New Project\viral-ai-content\output\videos"
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Update progress - getting stock footage
+        job_status[job_id].update({
+            "message": "Fetching cinematic stock footage...",
+            "progress": 30,
+            "updated_at": datetime.now().isoformat()
+        })
+
+        # Get stock footage first
+        from stock_footage_manager import StockFootageManager
+        stock_manager = StockFootageManager(os.getenv('PEXELS_API_KEY'))
+
+        # Search for cinematic/tech footage
+        footage_dict = stock_manager.get_footage_for_script(script_data)
+
+        # Combine all footage paths
+        all_footage = (
+            footage_dict.get('hook', []) +
+            footage_dict.get('main_points', []) +
+            footage_dict.get('background', [])
+        )
+
+        # Update progress - creating documentary
+        job_status[job_id].update({
+            "message": "Creating documentary-style video with cinematic effects...",
+            "progress": 50,
+            "updated_at": datetime.now().isoformat()
+        })
+
+        # Use documentary creator
+        creator = DocumentaryStyleCreator()
+
+        # Create event loop for async functions
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        logger.info(f"[{job_id}] Starting documentary video creation...")
+        output_path = loop.run_until_complete(
+            creator.create_documentary_video(script_data, all_footage)
+        )
+        loop.close()
+
+        # Format results to match expected structure
+        results = {
+            'documentary': {
+                'path': output_path,
+                'thumbnail': output_path.replace('.mp4', '_thumb.jpg'),
+                'quality_score': 9.0  # Documentary style gets high quality score
+            }
+        }
+
+        # Update progress
+        job_status[job_id].update({
+            "message": "Finalizing documentary video...",
+            "progress": 90,
+            "updated_at": datetime.now().isoformat()
+        })
+
+        # Results already formatted above
+        video_results = results
+        logger.info(f"[{job_id}] Created documentary video: {output_path}")
+
+        # Save successful script for reference
+        script_file = os.path.join(
+            r"C:\New Project\viral-ai-content\data\processed",
+            f"script_{script_data.get('id', datetime.now().strftime('%Y%m%d_%H%M%S'))}.json"
+        )
+        os.makedirs(os.path.dirname(script_file), exist_ok=True)
+        with open(script_file, 'w') as f:
+            json.dump(script_data, f, indent=2)
+
+        # Update status to completed
+        job_status[job_id].update({
+            "status": "completed",
+            "message": "Video created successfully!",
+            "progress": 100,
+            "videos": video_results,
+            "completed_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
+        })
+
+        logger.info(f"[{job_id}] Video creation successful!")
+
+    except Exception as e:
+        logger.error(f"[{job_id}] Error in async video creation: {str(e)}")
+        logger.error(traceback.format_exc())
+
+        job_status[job_id].update({
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "progress": 0,
+            "updated_at": datetime.now().isoformat()
+        })
+
+def _create_video_from_data(script_data):
+    """Internal function to handle video creation from script data (sync version for compatibility)."""
+    # Validate required fields
+    if not validate_script_data(script_data):
+        logger.error("Script validation failed")
+        return jsonify({
+            "success": False,
+            "error": "Invalid script data - missing required fields"
+        }), 400
+    
+    # Log parsed data
+    logger.info(f"Script ID: {script_data.get('id', 'unknown')}")
+    logger.info(f"Title: {script_data['video_details']['title']}")
+    logger.info(f"Voiceover length: {len(script_data['voiceover'])} chars")
+    logger.info(f"Main points: {len(script_data['script_components']['main_points'])}")
+    
+    # Create output directory
+    output_dir = r"C:\New Project\viral-ai-content\output\videos"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Get stock footage first
+    from stock_footage_manager import StockFootageManager
+    stock_manager = StockFootageManager(os.getenv('PEXELS_API_KEY'))
+
+    # Search for cinematic/tech footage
+    footage_dict = stock_manager.get_footage_for_script(script_data)
+
+    # Combine all footage paths
+    all_footage = (
+        footage_dict.get('hook', []) +
+        footage_dict.get('main_points', []) +
+        footage_dict.get('background', [])
+    )
+
+    # Use documentary creator
+    creator = DocumentaryStyleCreator()
+
+    # Create event loop for async functions
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Create documentary video
+    logger.info("Starting documentary video creation...")
+    output_path = loop.run_until_complete(
+        creator.create_documentary_video(script_data, all_footage)
+    )
+    loop.close()
+
+    # Prepare response
+    response = {
+        "success": True,
+        "message": "Documentary video created successfully!",
+        "videos": {
+            "documentary": {
+                "path": output_path,
+                "thumbnail": output_path.replace('.mp4', '_thumb.jpg'),
+                "quality_score": 9.0
+            }
+        }
+    }
+
+    logger.info(f"Created documentary video: {output_path}")
+    
+    # Save successful script for reference
+    script_file = os.path.join(
+        r"C:\New Project\viral-ai-content\data\processed",
+        f"script_{script_data.get('id', datetime.now().strftime('%Y%m%d_%H%M%S'))}.json"
+    )
+    with open(script_file, 'w') as f:
+        json.dump(script_data, f, indent=2)
+    
+    logger.info("✅ Video creation successful!")
+    return jsonify(response), 200
+
+@app.route('/create-video-async', methods=['POST'])
+def create_video_async():
+    """Async endpoint for video creation - returns immediately with job ID"""
+    try:
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())
+
         # Log incoming request
         logger.info("=" * 50)
-        logger.info("NEW VIDEO REQUEST RECEIVED")
-        
+        logger.info(f"NEW ASYNC VIDEO REQUEST RECEIVED - Job ID: {job_id}")
+
         # Get and log raw data
         raw_data = request.get_json()
         logger.info(f"Raw data type: {type(raw_data)}")
         logger.info(f"Raw data keys: {raw_data.keys() if isinstance(raw_data, dict) else 'Not a dict'}")
-        
+
         # Debug: Save raw data for inspection
         debug_file = r"C:\New Project\viral-ai-content\data\processed\debug_last_request.json"
         os.makedirs(os.path.dirname(debug_file), exist_ok=True)
         with open(debug_file, 'w') as f:
             json.dump(raw_data, f, indent=2)
         logger.info(f"Debug data saved to: {debug_file}")
-        
+
         # Parse script data properly
         script_data = parse_script_data(raw_data)
-        
-        # Validate required fields
-        if not validate_script_data(script_data):
-            logger.error("Script validation failed")
-            return jsonify({
-                "success": False,
-                "error": "Invalid script data - missing required fields"
-            }), 400
-        
-        # Log parsed data
-        logger.info(f"Script ID: {script_data.get('id', 'unknown')}")
-        logger.info(f"Title: {script_data['video_details']['title']}")
-        logger.info(f"Voiceover length: {len(script_data['voiceover'])} chars")
-        logger.info(f"Main points: {len(script_data['script_components']['main_points'])}")
-        
-        # Create output directory
-        output_dir = r"C:\New Project\viral-ai-content\output\videos"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Initialize video creator
-        creator = EnhancedVideoCreator()
-        
-        # Create event loop for async functions
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Create video in all formats
-        logger.info("Starting video creation...")
-        results = loop.run_until_complete(
-            creator.create_all_formats(script_data)
-        )
-        loop.close()
-        
-        # Prepare response
-        response = {
-            "success": True,
-            "message": "Videos created successfully!",
-            "videos": {}
+
+        # Initialize job status
+        job_status[job_id] = {
+            "status": "queued",
+            "message": "Video creation queued",
+            "progress": 0,
+            "script_data": script_data,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat()
         }
-        
-        for format_name, result in results.items():
-            response["videos"][format_name] = {
-                "path": result['path'],
-                "thumbnail": result['path'].replace('.mp4', '_thumb.jpg'),
-                "quality_score": result['report']['predicted_score']
-            }
-            logger.info(f"Created {format_name}: {result['path']}")
-        
-        # Save successful script for reference
-        script_file = os.path.join(
-            r"C:\New Project\viral-ai-content\data\processed",
-            f"script_{script_data.get('id', datetime.now().strftime('%Y%m%d_%H%M%S'))}.json"
+
+        # Start video creation in background thread
+        thread = threading.Thread(
+            target=_create_video_async,
+            args=(job_id, script_data),
+            daemon=True
         )
-        with open(script_file, 'w') as f:
-            json.dump(script_data, f, indent=2)
-        
-        logger.info("✅ Video creation successful!")
-        return jsonify(response), 200
-        
+        thread.start()
+
+        # Return immediate response with job ID
+        return jsonify({
+            "success": True,
+            "job_id": job_id,
+            "status": "queued",
+            "message": "Video creation started",
+            "status_url": f"/status/{job_id}",
+            "estimated_time": "2-5 minutes"
+        }), 202
+
     except Exception as e:
-        logger.error(f"❌ Error in video creation: {str(e)}")
+        logger.error(f"❌ Error starting async video creation: {str(e)}")
         logger.error(traceback.format_exc())
-        
+
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+@app.route('/status/<job_id>', methods=['GET'])
+def get_job_status(job_id):
+    """Get status of a video creation job"""
+    if job_id not in job_status:
+        return jsonify({
+            "success": False,
+            "error": "Job not found"
+        }), 404
+
+    status_data = job_status[job_id].copy()
+    # Remove script_data from response to keep it clean
+    status_data.pop('script_data', None)
+
+    return jsonify({
+        "success": True,
+        "job_id": job_id,
+        **status_data
+    })
+
+@app.route('/jobs', methods=['GET'])
+def list_jobs():
+    """List all jobs and their status"""
+    jobs = []
+    for job_id, status in job_status.items():
+        job_info = status.copy()
+        job_info.pop('script_data', None)  # Remove script data for summary
+        job_info['job_id'] = job_id
+        jobs.append(job_info)
+
+    return jsonify({
+        "success": True,
+        "jobs": jobs,
+        "total": len(jobs)
+    })
+
+@app.route('/create-video', methods=['POST'])
+def create_video():
+    """Main endpoint for video creation (synchronous - for compatibility)"""
+    try:
+        # Log incoming request
+        logger.info("=" * 50)
+        logger.info("NEW VIDEO REQUEST RECEIVED (SYNC)")
+
+        # Get and log raw data
+        raw_data = request.get_json()
+        logger.info(f"Raw data type: {type(raw_data)}")
+        logger.info(f"Raw data keys: {raw_data.keys() if isinstance(raw_data, dict) else 'Not a dict'}")
+
+        # Debug: Save raw data for inspection
+        debug_file = r"C:\New Project\viral-ai-content\data\processed\debug_last_request.json"
+        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
+        with open(debug_file, 'w') as f:
+            json.dump(raw_data, f, indent=2)
+        logger.info(f"Debug data saved to: {debug_file}")
+
+        # Parse script data properly
+        script_data = parse_script_data(raw_data)
+
+        return _create_video_from_data(script_data)
+
+    except Exception as e:
+        logger.error(f"Error in video creation: {str(e)}")
+        logger.error(traceback.format_exc())
+
         return jsonify({
             "success": False,
             "error": str(e),
@@ -236,13 +493,18 @@ def test():
     """Test endpoint to verify API is running"""
     return jsonify({
         "status": "✅ Video API is running!",
-        "version": "2.0",
+        "version": "4.0 - Documentary Style",
+        "style": "Cinematic Documentary with Professional Effects",
         "endpoints": [
             "/test - This endpoint",
-            "/create-video - Create video from script (POST)",
+            "/create-video - Create documentary video synchronously (POST)",
+            "/create-video-async - Create documentary video asynchronously (POST)",
+            "/status/<job_id> - Get job status (GET)",
+            "/jobs - List all jobs (GET)",
             "/health - Health check"
         ],
         "project_path": r"C:\New Project\viral-ai-content",
+        "active_jobs": len(job_status),
         "timestamp": datetime.now().isoformat()
     })
 
@@ -297,12 +559,10 @@ def test_video():
     script_data = request.get_json() if request.is_json else sample_script
     
     # Create video
-    request.json = script_data
-    return create_video()
+    return _create_video_from_data(script_data)
 
 if __name__ == '__main__':
     from dotenv import load_dotenv
-    load_dotenv(encoding='utf-8-sig')
     print("=" * 50)
     print("🚀 VIRAL AI VIDEO API SERVER")
     print("=" * 50)

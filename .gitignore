@@ -7,6 +7,12 @@
 output/
 data/
 
+# Keep videos and thumbnails locally but not in git
+*.mp4
+*.jpg
+*.png
+*.jpeg
+
 # Python cache
 __pycache__/
 *.pyc

@@ -1,0 +1,371 @@
+{
+  "name": "Viral AI Content - Async",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "id": "schedule-trigger",
+      "name": "Every 4 Hours"
+    },
+    {
+      "parameters": {
+        "url": "https://www.reddit.com/r/artificial/hot.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "10"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "ViralAIContent/1.0"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [208, 0],
+      "id": "fetch-reddit",
+      "name": "Fetch Reddit Hot Posts"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process Reddit posts and prepare for Gemini\nconst posts = $input.first().json.data.children;\n\n// Extract and rank posts by engagement\nconst rankedPosts = posts.map(post => {\n  const data = post.data;\n  return {\n    title: data.title,\n    score: data.score,\n    comments: data.num_comments,\n    url: `https://reddit.com${data.permalink}`,\n    engagementScore: data.score + (data.num_comments * 2)\n  };\n}).sort((a, b) => b.engagementScore - a.engagementScore);\n\n// Get the top post\nconst topPost = rankedPosts[0];\n\n// Create prompt for Gemini\nconst prompt = `You are a viral video script writer. Create a 30-45 second video script based on this trending AI topic.\n\nTOPIC: ${topPost.title}\nURL: ${topPost.url}\n\nRULES:\n1. Must be exactly 30-45 seconds when read aloud\n2. Use simple, conversational language\n3. Include a strong hook in first 3 seconds\n4. Make it relevant for Indian AI enthusiasts\n\nReturn ONLY a JSON object with this EXACT structure (no additional text):\n{\n  \"title\": \"catchy video title\",\n  \"hook\": \"attention grabbing first line\",\n  \"main_points\": [\n    \"first key point\",\n    \"second key point\",\n    \"third key point\"\n  ],\n  \"cta\": \"call to action\",\n  \"voiceover\": \"complete script to be read\",\n  \"hashtags\": [\"#AI\", \"#TechNews\", \"#India\"]\n}`;\n\n// Log for debugging\nconsole.log('Selected post:', topPost.title);\nconsole.log('Engagement score:', topPost.engagementScore);\n\nreturn [{\n  json: {\n    prompt: prompt,\n    topPost: topPost,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 0],
+      "id": "process-posts",
+      "name": "Process & Select Best Post"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "contents",
+              "value": "={{ [{\"parts\": [{\"text\": $json.prompt}]}] }}"
+            },
+            {
+              "name": "generationConfig",
+              "value": "={{ {\"temperature\": 0.7, \"maxOutputTokens\": 800, \"response_mime_type\": \"application/json\"} }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [608, 0],
+      "id": "generate-script",
+      "name": "Generate Script with Gemini",
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "gemini-api-key",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini response and prepare for video creation\nconst geminiResponse = $input.first().json;\n\n// Extract the generated script\nlet scriptData;\ntry {\n  const responseText = geminiResponse.candidates[0].content.parts[0].text;\n  \n  // Parse JSON from response\n  scriptData = JSON.parse(responseText);\n  \n  // Add metadata\n  scriptData.id = `script_${Date.now()}`;\n  scriptData.generated_at = new Date().toISOString();\n  scriptData.source = 'Reddit r/artificial';\n  \n  // Ensure all required fields exist\n  if (!scriptData.voiceover) {\n    scriptData.voiceover = `${scriptData.hook} ${scriptData.main_points.join(' ')} ${scriptData.cta}`;\n  }\n  \n  // Structure for video API\n  const videoRequest = {\n    id: scriptData.id,\n    timestamp: scriptData.generated_at,\n    video_details: {\n      title: scriptData.title,\n      duration: \"45 seconds\",\n      format: \"9:16 vertical\"\n    },\n    script_components: {\n      hook: scriptData.hook,\n      problem: \"\",  // Add if needed\n      main_points: scriptData.main_points,\n      cta: scriptData.cta\n    },\n    voiceover: scriptData.voiceover,\n    hashtags: scriptData.hashtags\n  };\n  \n  console.log('Script generated successfully');\n  console.log('Title:', scriptData.title);\n  console.log('Voiceover length:', scriptData.voiceover.length);\n  \n  return [{\n    json: videoRequest\n  }];\n  \n} catch (error) {\n  console.error('Failed to parse Gemini response:', error);\n  console.log('Raw response:', geminiResponse);\n  \n  // Return error for handling\n  return [{\n    json: {\n      error: true,\n      message: error.message,\n      raw_response: geminiResponse\n    }\n  }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0],
+      "id": "prepare-request",
+      "name": "Prepare Video Request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5000/create-video-async",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1008, 0],
+      "id": "start-video",
+      "name": "Start Video Creation",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "unit": "seconds",
+        "amount": 30
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1200, 0],
+      "id": "wait-initial",
+      "name": "Wait 30 Seconds"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://localhost:5000/status/{{ $('Start Video Creation').first().json.job_id }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 5000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 0],
+      "id": "check-status",
+      "name": "Check Status"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "completed",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "error",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "error",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1600, 0],
+      "id": "status-check",
+      "name": "Video Complete?"
+    },
+    {
+      "parameters": {
+        "unit": "seconds",
+        "amount": 60
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1400, 200],
+      "id": "wait-more",
+      "name": "Wait 60 Seconds"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log successful video creation\nconst status = $input.first().json;\n\nconsole.log('🎉 Video creation completed!');\nconsole.log('Job ID:', status.job_id);\nconsole.log('Status:', status.status);\n\nif (status.status === 'completed') {\n  console.log('Videos created:');\n  Object.keys(status.videos || {}).forEach(format => {\n    console.log(`  ${format}: ${status.videos[format].path}`);\n    console.log(`  Quality Score: ${status.videos[format].quality_score}/10`);\n  });\n  \n  return [{\n    json: {\n      success: true,\n      message: 'Video creation completed successfully!',\n      job_id: status.job_id,\n      videos: status.videos,\n      completed_at: status.completed_at\n    }\n  }];\n} else {\n  console.log('❌ Video creation failed!');\n  console.log('Error:', status.error);\n  \n  return [{\n    json: {\n      success: false,\n      message: 'Video creation failed',\n      job_id: status.job_id,\n      error: status.error\n    }\n  }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 0],
+      "id": "final-result",
+      "name": "Log Final Result"
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Reddit Hot Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Reddit Hot Posts": {
+      "main": [
+        [
+          {
+            "node": "Process & Select Best Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process & Select Best Post": {
+      "main": [
+        [
+          {
+            "node": "Generate Script with Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Script with Gemini": {
+      "main": [
+        [
+          {
+            "node": "Prepare Video Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Video Request": {
+      "main": [
+        [
+          {
+            "node": "Start Video Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Video Creation": {
+      "main": [
+        [
+          {
+            "node": "Wait 30 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Check Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Status": {
+      "main": [
+        [
+          {
+            "node": "Video Complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Video Complete?": {
+      "main": [
+        [
+          {
+            "node": "Log Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 60 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 60 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Check Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "async-version-1.0"
+}
